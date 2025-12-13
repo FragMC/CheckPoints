@@ -10,6 +10,7 @@ import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
+
 import java.util.*;
 
 public class CheckpointPlugin extends JavaPlugin implements CommandExecutor, TabCompleter {
@@ -36,7 +37,8 @@ public class CheckpointPlugin extends JavaPlugin implements CommandExecutor, Tab
 
         if (args.length == 0) {
             sender.sendMessage(ChatColor.YELLOW + "Checkpoint Commands:");
-            sender.sendMessage(ChatColor.GRAY + "/cp set - Set your checkpoint");
+            sender.sendMessage(ChatColor.GRAY + "/cp set - Set your checkpoint at your location");
+            sender.sendMessage(ChatColor.GRAY + "/cp set <x> <y> <z> - Set your checkpoint at specific coordinates");
             sender.sendMessage(ChatColor.GRAY + "/cp go - Teleport to your checkpoint");
             sender.sendMessage(ChatColor.GRAY + "/cp tp <player|@a[tag=...]> - Teleport player(s) to their checkpoint");
             return true;
@@ -46,7 +48,20 @@ public class CheckpointPlugin extends JavaPlugin implements CommandExecutor, Tab
 
         switch (subCommand) {
             case "set":
-                return handleSet(sender);
+                // /cp set
+                if (args.length == 1) {
+                    return handleSet(sender);
+                }
+
+                // /cp set <x> <y> <z>
+                if (args.length == 4 && isNumber(args[1])) {
+                    return handleSetWithCoordinates(sender, args);
+                }
+
+                // /cp set <player|@a> [x y z]
+                return handleSetTarget(sender, args[1], args);
+
+
 
             case "go":
                 return handleGo(sender);
@@ -65,12 +80,13 @@ public class CheckpointPlugin extends JavaPlugin implements CommandExecutor, Tab
     }
 
     private boolean handleSet(CommandSender sender) {
-        if (!(sender instanceof Player)) {
-            sender.sendMessage(ChatColor.RED + "Only players can set checkpoints!");
+        Player player = getPlayerFromSender(sender);
+
+        if (player == null) {
+            sender.sendMessage(ChatColor.RED + "Only players can set checkpoints! Use: /execute as <player> run cp set");
             return true;
         }
 
-        Player player = (Player) sender;
         Location loc = player.getLocation();
         checkpoints.put(player.getUniqueId(), loc);
 
@@ -80,13 +96,42 @@ public class CheckpointPlugin extends JavaPlugin implements CommandExecutor, Tab
         return true;
     }
 
-    private boolean handleGo(CommandSender sender) {
-        if (!(sender instanceof Player)) {
-            sender.sendMessage(ChatColor.RED + "Only players can teleport to checkpoints!");
+    private boolean handleSetWithCoordinates(CommandSender sender, String[] args) {
+        Player player = getPlayerFromSender(sender);
+
+        if (player == null) {
+            sender.sendMessage(ChatColor.RED + "Only players can set checkpoints! Use: /execute as <player> run cp set <x> <y> <z>");
             return true;
         }
 
-        Player player = (Player) sender;
+        try {
+            double x = Double.parseDouble(args[1]);
+            double y = Double.parseDouble(args[2]);
+            double z = Double.parseDouble(args[3]);
+
+            Location loc = new Location(player.getWorld(), x, y, z);
+            loc.setYaw(player.getLocation().getYaw());
+            loc.setPitch(player.getLocation().getPitch());
+
+            checkpoints.put(player.getUniqueId(), loc);
+
+            player.sendMessage(ChatColor.GREEN + "Checkpoint set at: " +
+                    ChatColor.GRAY + String.format("X: %.1f, Y: %.1f, Z: %.1f", x, y, z));
+            return true;
+        } catch (NumberFormatException e) {
+            sender.sendMessage(ChatColor.RED + "Invalid coordinates! Usage: /cp set <x> <y> <z>");
+            return true;
+        }
+    }
+
+    private boolean handleGo(CommandSender sender) {
+        Player player = getPlayerFromSender(sender);
+
+        if (player == null) {
+            sender.sendMessage(ChatColor.RED + "Only players can teleport to checkpoints! Use: /execute as <player> run cp go");
+            return true;
+        }
+
         Location checkpoint = checkpoints.get(player.getUniqueId());
 
         if (checkpoint == null) {
@@ -119,6 +164,16 @@ public class CheckpointPlugin extends JavaPlugin implements CommandExecutor, Tab
 
         return teleportPlayerToCheckpoint(sender, targetPlayer);
     }
+
+    private boolean isNumber(String s) {
+        try {
+            Double.parseDouble(s);
+            return true;
+        } catch (NumberFormatException e) {
+            return false;
+        }
+    }
+
 
     private boolean handleSelectorTeleport(CommandSender sender, String selector) {
         // Parse tag from selector like @a[tag=mytag]
@@ -192,14 +247,98 @@ public class CheckpointPlugin extends JavaPlugin implements CommandExecutor, Tab
                 completions.add("tp");
             }
         } else if (args.length == 2 && args[0].equalsIgnoreCase("tp")) {
-            // Add online player names
+            // Add online player names for /cp tp
             for (Player player : Bukkit.getOnlinePlayers()) {
                 completions.add(player.getName());
             }
-            // Add selector
             completions.add("@a");
         }
 
         return completions;
+    }
+
+    private boolean handleSetTarget(CommandSender sender, String target, String[] args) {
+        Collection<Player> players = resolveTargets(target);
+
+        if (players.isEmpty()) {
+            sender.sendMessage(ChatColor.RED + "No players matched!");
+            return true;
+        }
+
+        Location loc;
+
+        if (args.length >= 5) {
+            try {
+                double x = Double.parseDouble(args[2]);
+                double y = Double.parseDouble(args[3]);
+                double z = Double.parseDouble(args[4]);
+                loc = new Location(players.iterator().next().getWorld(), x, y, z);
+            } catch (NumberFormatException e) {
+                sender.sendMessage(ChatColor.RED + "Invalid coordinates!");
+                return true;
+            }
+        } else {
+            loc = null; // use player location
+        }
+
+        int count = 0;
+
+        for (Player player : players) {
+            Location setLoc = loc != null ? loc.clone() : player.getLocation();
+            setLoc.setYaw(player.getLocation().getYaw());
+            setLoc.setPitch(player.getLocation().getPitch());
+
+            checkpoints.put(player.getUniqueId(), setLoc);
+            player.sendMessage(ChatColor.GREEN + "Checkpoint set!");
+            count++;
+        }
+
+        sender.sendMessage(ChatColor.GREEN + "Set checkpoint for " + count + " player(s).");
+        return true;
+    }
+
+    private Collection<Player> resolveTargets(String target) {
+        List<Player> result = new ArrayList<>();
+
+        if (target.startsWith("@")) {
+
+            if (target.equalsIgnoreCase("@a")) {
+                result.addAll(Bukkit.getOnlinePlayers());
+                return result;
+            }
+
+            if (target.startsWith("@a[tag=") && target.endsWith("]")) {
+                String tag = target.substring(7, target.length() - 1);
+
+                for (Player p : Bukkit.getOnlinePlayers()) {
+                    if (p.getScoreboardTags().contains(tag)) {
+                        result.add(p);
+                    }
+                }
+                return result;
+            }
+
+            return result;
+        }
+
+        Player player = Bukkit.getPlayer(target);
+        if (player != null) {
+            result.add(player);
+        }
+
+        return result;
+    }
+
+
+
+    private Player getPlayerFromSender(CommandSender sender) {
+        // Check if sender is a player directly
+        if (sender instanceof Player) {
+            return (Player) sender;
+        }
+
+        // Check if it's a proxied command sender (from /execute)
+
+        return null;
     }
 }
