@@ -1,0 +1,21 @@
+name: CheckpointPlugin
+version: 1.0
+main: com.stufy.fragmc.checkpoints.CheckpointPlugin
+api-version: '1.21'
+author: YourName
+description: A checkpoint system for players
+
+commands:
+  cp:
+    description: Checkpoint commands
+    usage: /cp <set|go|tp>
+    permission: checkpoint.use
+    permission-message: You don't have permission to use this command!
+
+permissions:
+  checkpoint.use:
+    description: Allows using basic checkpoint commands
+    default: true
+  checkpoint.tp:
+    description: Allows teleporting other players to their checkpoints
+    default: op

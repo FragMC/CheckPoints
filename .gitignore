@@ -1,0 +1,30 @@
+# Maven
+CheckPoints/target/
+
+# IntelliJ IDEA
+CheckPoints/.idea/
+CheckPoints/*.iml
+CheckPoints/*.iws
+CheckPoints/*.ipr
+
+# Eclipse
+CheckPoints/.classpath
+CheckPoints/.project
+CheckPoints/.settings/
+
+# VS Code
+CheckPoints/.vscode/
+
+# Mac
+.DS_Store
+**/.DS_Store
+
+# Windows
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
