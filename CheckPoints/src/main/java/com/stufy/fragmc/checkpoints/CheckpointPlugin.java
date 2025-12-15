@@ -16,6 +16,11 @@ import java.util.*;
 public class CheckpointPlugin extends JavaPlugin implements CommandExecutor, TabCompleter {
 
     private final Map<UUID, Location> checkpoints = new HashMap<>();
+    private final Map<UUID, Long> lastSetTime = new HashMap<>();
+    private final Map<UUID, Integer> messageCount = new HashMap<>();
+    private final Map<UUID, Long> rateLimitWindowStart = new HashMap<>();
+    private static final long SPAM_THRESHOLD_MS = 100; // Prevent spam within 100ms
+    private static final long RATE_LIMIT_WINDOW_MS = 1000; // 1 second window for rate limiting
 
     @Override
     public void onEnable() {
@@ -39,8 +44,11 @@ public class CheckpointPlugin extends JavaPlugin implements CommandExecutor, Tab
             sender.sendMessage(ChatColor.YELLOW + "Checkpoint Commands:");
             sender.sendMessage(ChatColor.GRAY + "/cp set - Set your checkpoint at your location");
             sender.sendMessage(ChatColor.GRAY + "/cp set <x> <y> <z> - Set your checkpoint at specific coordinates");
-            sender.sendMessage(ChatColor.GRAY + "/cp go - Teleport to your checkpoint");
-            sender.sendMessage(ChatColor.GRAY + "/cp tp <player|@a[tag=...]> - Teleport player(s) to their checkpoint");
+            sender.sendMessage(ChatColor.GRAY + "/cp set --nocoords - Set checkpoint without showing coordinates");
+            sender.sendMessage(ChatColor.GRAY + "/cp set --no-message - Set checkpoint silently");
+            sender.sendMessage(ChatColor.GRAY + "/cp set --rate-limit=<num> - Limit messages to <num> per second");
+            sender.sendMessage(ChatColor.GRAY + "/cp go [--no-message] [--rate-limit=<num>] - Teleport to your checkpoint");
+            sender.sendMessage(ChatColor.GRAY + "/cp tp <player|@a[tag=...]> [--no-message] [--rate-limit=<num>] - Teleport player(s) to their checkpoint");
             return true;
         }
 
@@ -48,30 +56,39 @@ public class CheckpointPlugin extends JavaPlugin implements CommandExecutor, Tab
 
         switch (subCommand) {
             case "set":
-                // /cp set
-                if (args.length == 1) {
-                    return handleSet(sender);
+                // Parse flags from args
+                boolean noCoords = hasFlag(args, "--nocoords");
+                boolean noMessage = hasFlag(args, "--no-message");
+                int rateLimit = getRateLimitValue(args);
+                String[] filteredArgs = removeFlags(args);
+
+                // /cp set [flags]
+                if (filteredArgs.length == 1) {
+                    return handleSet(sender, noCoords, noMessage, rateLimit);
                 }
 
-                // /cp set <x> <y> <z>
-                if (args.length == 4 && isNumber(args[1])) {
-                    return handleSetWithCoordinates(sender, args);
+                // /cp set <x> <y> <z> [flags]
+                if (filteredArgs.length == 4 && isNumber(filteredArgs[1])) {
+                    return handleSetWithCoordinates(sender, filteredArgs, noCoords, noMessage, rateLimit);
                 }
 
-                // /cp set <player|@a> [x y z]
-                return handleSetTarget(sender, args[1], args);
-
-
+                // /cp set <player|@a> [x y z] [flags]
+                return handleSetTarget(sender, filteredArgs[1], filteredArgs, noCoords, noMessage, rateLimit);
 
             case "go":
-                return handleGo(sender);
+                boolean goNoMessage = hasFlag(args, "--no-message");
+                int goRateLimit = getRateLimitValue(args);
+                return handleGo(sender, goNoMessage, goRateLimit);
 
             case "tp":
                 if (args.length < 2) {
                     sender.sendMessage(ChatColor.RED + "Usage: /cp tp <player|@a[tag=...]>");
                     return true;
                 }
-                return handleTeleport(sender, args[1]);
+                boolean tpNoMessage = hasFlag(args, "--no-message");
+                int tpRateLimit = getRateLimitValue(args);
+                String[] tpFilteredArgs = removeFlags(args);
+                return handleTeleport(sender, tpFilteredArgs.length >= 2 ? tpFilteredArgs[1] : args[1], tpNoMessage, tpRateLimit);
 
             default:
                 sender.sendMessage(ChatColor.RED + "Unknown subcommand. Use /cp for help.");
@@ -79,7 +96,7 @@ public class CheckpointPlugin extends JavaPlugin implements CommandExecutor, Tab
         }
     }
 
-    private boolean handleSet(CommandSender sender) {
+    private boolean handleSet(CommandSender sender, boolean noCoords, boolean noMessage, int rateLimit) {
         Player player = getPlayerFromSender(sender);
 
         if (player == null) {
@@ -87,20 +104,47 @@ public class CheckpointPlugin extends JavaPlugin implements CommandExecutor, Tab
             return true;
         }
 
+        // Check for spam prevention
+        if (isSpamming(player)) {
+            return true;
+        }
+
+        // Check rate limit
+        if (!checkRateLimit(player, rateLimit)) {
+            return true;
+        }
+
         Location loc = player.getLocation();
         checkpoints.put(player.getUniqueId(), loc);
+        updateLastSetTime(player);
 
-        player.sendMessage(ChatColor.GREEN + "Checkpoint set at: " +
-                ChatColor.GRAY + String.format("X: %.1f, Y: %.1f, Z: %.1f",
-                loc.getX(), loc.getY(), loc.getZ()));
+        if (!noMessage) {
+            if (noCoords) {
+                player.sendMessage(ChatColor.GREEN + "Checkpoint set!");
+            } else {
+                player.sendMessage(ChatColor.GREEN + "Checkpoint set at: " +
+                        ChatColor.GRAY + String.format("X: %.1f, Y: %.1f, Z: %.1f",
+                        loc.getX(), loc.getY(), loc.getZ()));
+            }
+        }
         return true;
     }
 
-    private boolean handleSetWithCoordinates(CommandSender sender, String[] args) {
+    private boolean handleSetWithCoordinates(CommandSender sender, String[] args, boolean noCoords, boolean noMessage, int rateLimit) {
         Player player = getPlayerFromSender(sender);
 
         if (player == null) {
             sender.sendMessage(ChatColor.RED + "Only players can set checkpoints! Use: /execute as <player> run cp set <x> <y> <z>");
+            return true;
+        }
+
+        // Check for spam prevention
+        if (isSpamming(player)) {
+            return true;
+        }
+
+        // Check rate limit
+        if (!checkRateLimit(player, rateLimit)) {
             return true;
         }
 
@@ -114,9 +158,16 @@ public class CheckpointPlugin extends JavaPlugin implements CommandExecutor, Tab
             loc.setPitch(player.getLocation().getPitch());
 
             checkpoints.put(player.getUniqueId(), loc);
+            updateLastSetTime(player);
 
-            player.sendMessage(ChatColor.GREEN + "Checkpoint set at: " +
-                    ChatColor.GRAY + String.format("X: %.1f, Y: %.1f, Z: %.1f", x, y, z));
+            if (!noMessage) {
+                if (noCoords) {
+                    player.sendMessage(ChatColor.GREEN + "Checkpoint set!");
+                } else {
+                    player.sendMessage(ChatColor.GREEN + "Checkpoint set at: " +
+                            ChatColor.GRAY + String.format("X: %.1f, Y: %.1f, Z: %.1f", x, y, z));
+                }
+            }
             return true;
         } catch (NumberFormatException e) {
             sender.sendMessage(ChatColor.RED + "Invalid coordinates! Usage: /cp set <x> <y> <z>");
@@ -124,7 +175,7 @@ public class CheckpointPlugin extends JavaPlugin implements CommandExecutor, Tab
         }
     }
 
-    private boolean handleGo(CommandSender sender) {
+    private boolean handleGo(CommandSender sender, boolean noMessage, int rateLimit) {
         Player player = getPlayerFromSender(sender);
 
         if (player == null) {
@@ -132,19 +183,28 @@ public class CheckpointPlugin extends JavaPlugin implements CommandExecutor, Tab
             return true;
         }
 
+        // Check rate limit
+        if (!checkRateLimit(player, rateLimit)) {
+            return true;
+        }
+
         Location checkpoint = checkpoints.get(player.getUniqueId());
 
         if (checkpoint == null) {
-            player.sendMessage(ChatColor.RED + "You don't have a checkpoint set! Use /cp set first.");
+            if (!noMessage) {
+                player.sendMessage(ChatColor.RED + "You don't have a checkpoint set! Use /cp set first.");
+            }
             return true;
         }
 
         player.teleport(checkpoint);
-        player.sendMessage(ChatColor.GREEN + "Teleported to your checkpoint!");
+        if (!noMessage) {
+            player.sendMessage(ChatColor.GREEN + "Teleported to your checkpoint!");
+        }
         return true;
     }
 
-    private boolean handleTeleport(CommandSender sender, String target) {
+    private boolean handleTeleport(CommandSender sender, String target, boolean noMessage, int rateLimit) {
         if (!sender.hasPermission("checkpoint.tp")) {
             sender.sendMessage(ChatColor.RED + "You don't have permission to use this command!");
             return true;
@@ -152,17 +212,19 @@ public class CheckpointPlugin extends JavaPlugin implements CommandExecutor, Tab
 
         // Handle selector syntax @a[tag=...]
         if (target.startsWith("@a")) {
-            return handleSelectorTeleport(sender, target);
+            return handleSelectorTeleport(sender, target, noMessage, rateLimit);
         }
 
         // Handle single player teleport
         Player targetPlayer = Bukkit.getPlayer(target);
         if (targetPlayer == null) {
-            sender.sendMessage(ChatColor.RED + "Player '" + target + "' not found!");
+            if (!noMessage) {
+                sender.sendMessage(ChatColor.RED + "Player '" + target + "' not found!");
+            }
             return true;
         }
 
-        return teleportPlayerToCheckpoint(sender, targetPlayer);
+        return teleportPlayerToCheckpoint(sender, targetPlayer, noMessage, rateLimit);
     }
 
     private boolean isNumber(String s) {
@@ -174,8 +236,7 @@ public class CheckpointPlugin extends JavaPlugin implements CommandExecutor, Tab
         }
     }
 
-
-    private boolean handleSelectorTeleport(CommandSender sender, String selector) {
+    private boolean handleSelectorTeleport(CommandSender sender, String selector, boolean noMessage, int rateLimit) {
         // Parse tag from selector like @a[tag=mytag]
         String tag = null;
         if (selector.contains("[tag=") && selector.contains("]")) {
@@ -196,7 +257,9 @@ public class CheckpointPlugin extends JavaPlugin implements CommandExecutor, Tab
         }
 
         if (players.isEmpty()) {
-            sender.sendMessage(ChatColor.RED + "No players match the selector!");
+            if (!noMessage) {
+                sender.sendMessage(ChatColor.RED + "No players match the selector!");
+            }
             return true;
         }
 
@@ -204,35 +267,53 @@ public class CheckpointPlugin extends JavaPlugin implements CommandExecutor, Tab
         int failCount = 0;
 
         for (Player player : players) {
+            // Check rate limit for each player
+            if (!checkRateLimit(player, rateLimit)) {
+                continue;
+            }
+
             Location checkpoint = checkpoints.get(player.getUniqueId());
             if (checkpoint != null) {
                 player.teleport(checkpoint);
-                player.sendMessage(ChatColor.GREEN + "You were teleported to your checkpoint!");
+                if (!noMessage) {
+                    player.sendMessage(ChatColor.GREEN + "You were teleported to your checkpoint!");
+                }
                 successCount++;
             } else {
                 failCount++;
             }
         }
 
-        sender.sendMessage(ChatColor.GREEN + "Teleported " + successCount + " player(s) to their checkpoints.");
-        if (failCount > 0) {
-            sender.sendMessage(ChatColor.YELLOW + "" + failCount + " player(s) had no checkpoint set.");
+        if (!noMessage) {
+            sender.sendMessage(ChatColor.GREEN + "Teleported " + successCount + " player(s) to their checkpoints.");
+            if (failCount > 0) {
+                sender.sendMessage(ChatColor.YELLOW + "" + failCount + " player(s) had no checkpoint set.");
+            }
         }
 
         return true;
     }
 
-    private boolean teleportPlayerToCheckpoint(CommandSender sender, Player target) {
+    private boolean teleportPlayerToCheckpoint(CommandSender sender, Player target, boolean noMessage, int rateLimit) {
+        // Check rate limit
+        if (!checkRateLimit(target, rateLimit)) {
+            return true;
+        }
+
         Location checkpoint = checkpoints.get(target.getUniqueId());
 
         if (checkpoint == null) {
-            sender.sendMessage(ChatColor.RED + target.getName() + " doesn't have a checkpoint set!");
+            if (!noMessage) {
+                sender.sendMessage(ChatColor.RED + target.getName() + " doesn't have a checkpoint set!");
+            }
             return true;
         }
 
         target.teleport(checkpoint);
-        target.sendMessage(ChatColor.GREEN + "You were teleported to your checkpoint!");
-        sender.sendMessage(ChatColor.GREEN + "Teleported " + target.getName() + " to their checkpoint!");
+        if (!noMessage) {
+            target.sendMessage(ChatColor.GREEN + "You were teleported to your checkpoint!");
+            sender.sendMessage(ChatColor.GREEN + "Teleported " + target.getName() + " to their checkpoint!");
+        }
         return true;
     }
 
@@ -246,18 +327,38 @@ public class CheckpointPlugin extends JavaPlugin implements CommandExecutor, Tab
             if (sender.hasPermission("checkpoint.tp")) {
                 completions.add("tp");
             }
-        } else if (args.length == 2 && args[0].equalsIgnoreCase("tp")) {
-            // Add online player names for /cp tp
-            for (Player player : Bukkit.getOnlinePlayers()) {
-                completions.add(player.getName());
+        } else if (args.length >= 2 && args[0].equalsIgnoreCase("set")) {
+            // Add flags for /cp set
+            if (!hasFlag(args, "--nocoords")) {
+                completions.add("--nocoords");
             }
-            completions.add("@a");
+            if (!hasFlag(args, "--no-message")) {
+                completions.add("--no-message");
+            }
+        } else if (args.length >= 2 && args[0].equalsIgnoreCase("go")) {
+            // Add flag for /cp go
+            if (!hasFlag(args, "--no-message")) {
+                completions.add("--no-message");
+            }
+        } else if (args[0].equalsIgnoreCase("tp")) {
+            if (args.length == 2) {
+                // Add online player names for /cp tp
+                for (Player player : Bukkit.getOnlinePlayers()) {
+                    completions.add(player.getName());
+                }
+                completions.add("@a");
+            } else if (args.length >= 3) {
+                // Add flag for /cp tp
+                if (!hasFlag(args, "--no-message")) {
+                    completions.add("--no-message");
+                }
+            }
         }
 
         return completions;
     }
 
-    private boolean handleSetTarget(CommandSender sender, String target, String[] args) {
+    private boolean handleSetTarget(CommandSender sender, String target, String[] args, boolean noCoords, boolean noMessage, int rateLimit) {
         Collection<Player> players = resolveTargets(target);
 
         if (players.isEmpty()) {
@@ -284,16 +385,36 @@ public class CheckpointPlugin extends JavaPlugin implements CommandExecutor, Tab
         int count = 0;
 
         for (Player player : players) {
+            // Check spam for each player
+            if (isSpamming(player)) {
+                continue;
+            }
+
+            // Check rate limit for each player
+            if (!checkRateLimit(player, rateLimit)) {
+                continue;
+            }
+
             Location setLoc = loc != null ? loc.clone() : player.getLocation();
             setLoc.setYaw(player.getLocation().getYaw());
             setLoc.setPitch(player.getLocation().getPitch());
 
             checkpoints.put(player.getUniqueId(), setLoc);
-            player.sendMessage(ChatColor.GREEN + "Checkpoint set!");
+            updateLastSetTime(player);
+
+            if (!noMessage) {
+                if (noCoords) {
+                    player.sendMessage(ChatColor.GREEN + "Checkpoint set!");
+                } else {
+                    player.sendMessage(ChatColor.GREEN + "Checkpoint set!");
+                }
+            }
             count++;
         }
 
-        sender.sendMessage(ChatColor.GREEN + "Set checkpoint for " + count + " player(s).");
+        if (!noMessage) {
+            sender.sendMessage(ChatColor.GREEN + "Set checkpoint for " + count + " player(s).");
+        }
         return true;
     }
 
@@ -329,16 +450,110 @@ public class CheckpointPlugin extends JavaPlugin implements CommandExecutor, Tab
         return result;
     }
 
-
-
     private Player getPlayerFromSender(CommandSender sender) {
         // Check if sender is a player directly
         if (sender instanceof Player) {
             return (Player) sender;
         }
 
-        // Check if it's a proxied command sender (from /execute)
+        // Try to extract the player from proxied command senders (from /execute, /sudo, etc.)
+        try {
+            // Use reflection to get the callee from proxied senders
+            if (sender.getClass().getSimpleName().contains("ProxiedCommandSender") ||
+                    sender.getClass().getSimpleName().contains("ProxiedNativeCommandSender")) {
+
+                java.lang.reflect.Method getCallee = sender.getClass().getMethod("getCallee");
+                Object callee = getCallee.invoke(sender);
+
+                if (callee instanceof Player) {
+                    return (Player) callee;
+                }
+            }
+        } catch (Exception e) {
+            // Reflection failed, return null
+        }
 
         return null;
+    }
+
+    private boolean hasFlag(String[] args, String flag) {
+        for (String arg : args) {
+            if (arg.equalsIgnoreCase(flag)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String[] removeFlags(String[] args) {
+        List<String> filtered = new ArrayList<>();
+        for (String arg : args) {
+            if (!arg.startsWith("--")) {
+                filtered.add(arg);
+            }
+        }
+        return filtered.toArray(new String[0]);
+    }
+
+    private int getRateLimitValue(String[] args) {
+        for (String arg : args) {
+            if (arg.startsWith("--rate-limit=")) {
+                try {
+                    String value = arg.substring("--rate-limit=".length());
+                    int limit = Integer.parseInt(value);
+                    return limit > 0 ? limit : -1;
+                } catch (NumberFormatException e) {
+                    return -1;
+                }
+            }
+        }
+        return -1; // No rate limit
+    }
+
+    private boolean checkRateLimit(Player player, int maxMessagesPerSecond) {
+        if (maxMessagesPerSecond <= 0) {
+            return true; // No rate limit
+        }
+
+        UUID playerId = player.getUniqueId();
+        long currentTime = System.currentTimeMillis();
+
+        Long windowStart = rateLimitWindowStart.get(playerId);
+        Integer currentCount = messageCount.get(playerId);
+
+        // Start new window if needed
+        if (windowStart == null || (currentTime - windowStart) >= RATE_LIMIT_WINDOW_MS) {
+            rateLimitWindowStart.put(playerId, currentTime);
+            messageCount.put(playerId, 1);
+            return true;
+        }
+
+        // Check if within limit
+        if (currentCount == null) {
+            currentCount = 0;
+        }
+
+        if (currentCount >= maxMessagesPerSecond) {
+            return false; // Rate limit exceeded
+        }
+
+        // Increment counter
+        messageCount.put(playerId, currentCount + 1);
+        return true;
+    }
+
+    private boolean isSpamming(Player player) {
+        long currentTime = System.currentTimeMillis();
+        Long lastTime = lastSetTime.get(player.getUniqueId());
+
+        if (lastTime != null && (currentTime - lastTime) < SPAM_THRESHOLD_MS) {
+            return true;
+        }
+
+        return false;
+    }
+
+    private void updateLastSetTime(Player player) {
+        lastSetTime.put(player.getUniqueId(), System.currentTimeMillis());
     }
 }
