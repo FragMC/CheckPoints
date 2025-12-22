@@ -24,6 +24,7 @@ public class CheckpointPlugin extends JavaPlugin implements CommandExecutor, Tab
 
     @Override
     public void onEnable() {
+        saveDefaultConfig();
         this.getCommand("cp").setExecutor(this);
         this.getCommand("cp").setTabCompleter(this);
         getLogger().info("Checkpoint Plugin has been enabled!");
@@ -198,6 +199,8 @@ public class CheckpointPlugin extends JavaPlugin implements CommandExecutor, Tab
         }
 
         player.teleport(checkpoint);
+        runTeleportCommands(player, "go");
+
         if (!noMessage) {
             player.sendMessage(ChatColor.GREEN + "Teleported to your checkpoint!");
         }
@@ -275,6 +278,8 @@ public class CheckpointPlugin extends JavaPlugin implements CommandExecutor, Tab
             Location checkpoint = checkpoints.get(player.getUniqueId());
             if (checkpoint != null) {
                 player.teleport(checkpoint);
+                runTeleportCommands(player, "tp");
+
                 if (!noMessage) {
                     player.sendMessage(ChatColor.GREEN + "You were teleported to your checkpoint!");
                 }
@@ -310,6 +315,8 @@ public class CheckpointPlugin extends JavaPlugin implements CommandExecutor, Tab
         }
 
         target.teleport(checkpoint);
+        runTeleportCommands(target, "tp");
+
         if (!noMessage) {
             target.sendMessage(ChatColor.GREEN + "You were teleported to your checkpoint!");
             sender.sendMessage(ChatColor.GREEN + "Teleported " + target.getName() + " to their checkpoint!");
@@ -475,6 +482,25 @@ public class CheckpointPlugin extends JavaPlugin implements CommandExecutor, Tab
 
         return null;
     }
+
+    private void runTeleportCommands(Player player, String type) {
+        if (!getConfig().getBoolean("teleport-commands." + type + ".enabled", false)) {
+            return;
+        }
+
+        List<String> commands = getConfig().getStringList("teleport-commands." + type + ".commands");
+        if (commands.isEmpty()) return;
+
+        for (String command : commands) {
+            String parsed = command
+                    .replace("%player%", player.getName())
+                    .replace("%uuid%", player.getUniqueId().toString())
+                    .replace("%world%", player.getWorld().getName());
+
+            Bukkit.dispatchCommand(Bukkit.getConsoleSender(), parsed);
+        }
+    }
+
 
     private boolean hasFlag(String[] args, String flag) {
         for (String arg : args) {

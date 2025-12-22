@@ -1,0 +1,13 @@
+# Possible placeholders: %player% %uuid% %world%
+
+teleport-commands:
+  go:
+    enabled: true
+    commands:
+      - "say %player% used /cp go"
+      - "effect give %player% minecraft:speed 5 1 true"
+
+  tp:
+    enabled: true
+    commands:
+      - "say %player% was teleported via /cp tp"
