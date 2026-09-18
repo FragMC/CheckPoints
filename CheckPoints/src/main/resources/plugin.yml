@@ -1,5 +1,5 @@
 name: CheckpointPlugin
-version: 2.0.9-alpha
+version: 2.0.10-alpha
 main: com.stufy.fragmc.checkpoints.CheckpointPlugin
 api-version: '26.2'
 author: Stufy
