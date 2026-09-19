@@ -48,6 +48,21 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_ACTOR: ${{ github.actor }}
 
+      - name: Publish to Hangar (Release/Beta/Alpha from version)
+        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
+        env:
+          HANGAR_API_TOKEN: ${{ secrets.HANGAR_API_TOKEN }}
+        run: |
+          if [ -z "$HANGAR_API_TOKEN" ]; then echo "HANGAR_API_TOKEN not set, skipping Hangar publish for CheckPoints"; exit 0; fi
+          VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout -f CheckPoints/pom.xml)
+          COMMIT_DESC=$(git log -1 --pretty=%B)
+          if [[ "$VERSION" == *"-alpha"* ]]; then CHANNEL=Alpha; elif [[ "$VERSION" == *"-beta"* ]]; then CHANNEL=Beta; else CHANNEL=Release; fi
+          echo "Publishing CheckPoints $VERSION to Hangar FragMC/CheckPoints channel $CHANNEL"
+          echo "$COMMIT_DESC" > /tmp/changelog.txt
+          JWT=$(curl -s -X POST "https://hangar.papermc.io/api/v1/authenticate?apiKey=$HANGAR_API_TOKEN" | grep -o '"token":"[^"]*' | cut -d'"' -f4)
+          if [ -z "$JWT" ]; then echo "Hangar auth failed for CheckPoints"; exit 0; fi
+          curl -s -X POST "https://hangar.papermc.io/api/v1/projects/FragMC/CheckPoints/versions" -H "Authorization: $JWT" -F "channel=$CHANNEL" -F "version=$VERSION" -F "changelog=@/tmp/changelog.txt" -F "files=@CheckPoints/target/checkpoints-$VERSION.jar;type=application/java-archive" -F "platform=PAPER" -F "platformVersions=[\"26.2\"]" || echo "Hangar publish failed for CheckPoints (ignoring)"
+
       - name: Create GitHub Release with commit description as Maven release notes
         if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
         run: |
